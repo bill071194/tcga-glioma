@@ -229,23 +229,23 @@ Wood, M. D., Mukherjee, J., & Pieper, R. O. (2018). Neurofibromin knockdown in g
 
 ## **APPENDIX**
 
-![](RackMultipart20231107-1-4mtcmt_html_68987f401f9bb3.png)
+![](/Figures/Fig1-MLWorkflow.png)
 
 _Figure 1. Analysis Work Flow_
 
-![](RackMultipart20231107-1-4mtcmt_html_19adf93b7a897e36.png)
+![](/Figures/Fig2-GBMHist.png)
 
 _Figure 2. Distribution of GBM Classes_
 
-![](RackMultipart20231107-1-4mtcmt_html_aeffab36374811af.png)
+![](/Figures/Fig3-CorrMatrix.png)
 
 _Figure 3. Correlation Matrix Between Features_
 
-![](RackMultipart20231107-1-4mtcmt_html_30d2da3b5a056b94.png)
+![](/Figures/Fig4-Boruta.png)
 
 _Figure 4. Boruta Feature Importance_
 
-![](RackMultipart20231107-1-4mtcmt_html_c5f9c36fa2173697.png)
+![](/Figures/Fig5-RFE.png)
 
 _Figure 5. RFE Cross Validation Accuracy_
 
