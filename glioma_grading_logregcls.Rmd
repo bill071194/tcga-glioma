@@ -1,0 +1,310 @@
+---
+title: "glioma_grading"
+output: html_document
+date: "2023-07-24"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(dplyr)
+library(stringr)
+install.packages("fastDummies")
+library(fastDummies)
+install.packages("ggcorrplot")
+library(ggcorrplot)
+install.packages("ggstatsplot")
+library(ggstatsplot)
+install.packages("randomForest")
+library(randomForest)
+install.packages("Boruta")
+library(Boruta)
+install.packages("caret")
+library(caret)
+install.packages("mlbench")
+library(mlbench)
+install.packages("car")
+library(car)
+install.packages("ada")
+library(ada)
+install.packages("naivebayes")
+library(naivebayes)
+install.packages("e1071")
+library(e1071)
+```
+
+# Step 1: Import and process the data
+
+## Step 1.1: Import the data and check for missing values
+```{r}
+csv_data <- read.csv("TCGA_GBM_LGG_Mutations_all.csv", sep=",", header=TRUE)
+head(csv_data)
+sum(is.na(csv_data))
+```
+-- Upon further examination, 5 cases had no data for the Gender, Age, and Race variables. Therefore, these cases will be dropped from the data set. Cases with race not reported will be dropped from the dataset as well
+
+## Step 1.2: Drop unnecessary columns and missing data instances
+
+```{r}
+csv_data_dropped <- subset(csv_data,select=-c(Project,Case_ID,Primary_Diagnosis))
+csv_data_dropped <- csv_data_dropped[-c(42,438,672,707,795),]
+
+cleaned_data <- csv_data_dropped %>% filter(!grepl("not reported",Race))
+
+head(cleaned_data)
+nrow(cleaned_data)
+```
+## Step 1.3: Converting Age_at_diagnosis variable to unit of years and to numeric variable
+
+```{r}
+cleaned_data[c("Age_years", "Age_days")] <- str_split_fixed(cleaned_data$Age_at_diagnosis, " years ", 2)
+cleaned_data$Age_days <- str_sub(cleaned_data$Age_days, end=-5)
+cleaned_data$Age_diagnosed <- as.numeric(cleaned_data$Age_years) + as.numeric(cleaned_data$Age_days)/365
+cleaned_data$Age_diagnosed <- as.numeric(cleaned_data$Age_diagnosed)
+cleaned_data[10,]$Age_diagnosed <- 87
+cleaned_data[563, ]$Age_diagnosed <- 67
+cleaned_data <- subset(cleaned_data, select=-c(Age_at_diagnosis, Age_years, Age_days))
+
+
+head(cleaned_data)
+nrow(cleaned_data)
+sum(is.na(cleaned_data))
+cleaned_data[!complete.cases(cleaned_data),]
+```
+
+## Step 1.4: Hotcoding dummy variables
+
+```{r}
+cat_vars <- subset(cleaned_data, select=-c(Age_diagnosed))
+dummy_vars <- dummy_cols(cat_vars, remove_first_dummy = FALSE)
+
+retained_columns <- c("Grade_GBM", "Gender_Male", "Race_asian", "Race_black or african american", "Race_american indian or alaska native", "IDH1_MUTATED", "TP53_MUTATED", "ATRX_MUTATED", "PTEN_MUTATED", "EGFR_MUTATED", "CIC_MUTATED", "MUC16_MUTATED", "PIK3CA_MUTATED", "NF1_MUTATED", "PIK3R1_MUTATED", "FUBP1_MUTATED", "RB1_MUTATED", "NOTCH1_MUTATED", "BCOR_MUTATED", "CSMD3_MUTATED", "SMARCA4_MUTATED", "GRIN2A_MUTATED", "IDH2_MUTATED", "FAT4_MUTATED", "PDGFRA_MUTATED")
+
+dummy_vars <- subset(dummy_vars, select=retained_columns)
+head(dummy_vars)
+```
+
+## Step 1.5: Combine hotcoded data frame with numerical data frame (Age_diagnosed)
+```{r}
+final_df <- cbind(dummy_vars, cleaned_data$Age_diagnosed)
+column_labels <- c("GBM", "Gender_Male", "Race_asian", "Race_black", "Race_native_aa", "IDH1", "TP53", "ATRX", "PTEN", "EGFR", "CIC", "MUC16", "PIK3CA", "NF1", "PIK3R1", "FUBP1", "RB1", "NOTCH1", "BCOR", "CSMD3", "SMARCA4", "GRIN2A", "IDH2", "FAT4", "PDGFRA", "Age")
+
+colnames(final_df) <- column_labels
+final_df$GBM <- as.factor(final_df$GBM)
+
+head(final_df)
+nrow(final_df)
+sum(is.na(final_df))
+```
+
+```{r}
+table(final_df$GBM)
+ggplot(final_df) + geom_histogram(aes(x=GBM, fill = factor(GBM)), stat="count") + ggtitle("Distribution of GBM Classes")
+```
+-- The histogram indicates that the ratio between the over-represented class under-represented class is within acceptable boundaries and no sampling should be required.
+
+```{r}
+ggcorrmat(
+  data=final_df, 
+  type="parametric", 
+  title="Correlation matrix of relationship between features",
+  pch="cross",
+  ggcorrplot.args = list (
+    lab_size=3,
+    tl.srt=90,
+    pch.cex=5
+  )
+)
+```
+-- The correlation matrix indicates that there is no strong autocorrelation (< -0.7 or > 0.7) present among the features
+
+## Splitting the data into training and testing sets
+```{r}
+set.seed(123)
+train_size <- nrow(final_df) * 0.7
+train_rows <- sample(1:nrow(final_df), size=train_size)
+train_df <- final_df[train_rows,]
+test_df <- final_df[-train_rows,]
+
+head(train_df)
+nrow(train_df)
+nrow(test_df)
+```
+
+# Step 2: Using Random Forest algorithm for feature selection using Boruta and Recursive Feature Elimination (RFE) before feeding into the Logistic Regression model
+
+## Step 2.1: Feature selection using Boruta package
+```{r}
+set.seed(123)
+boruta_res <- Boruta(GBM~., data=train_df, doTrace=0, maxRuns=500)
+print(boruta_res)
+```
+## Step 2.1.1: Plot the Boruta results to visualize attribute importances
+```{r}
+plot(boruta_res, xlab="", xaxt="n")
+lz <- lapply(1:ncol(boruta_res$ImpHistory),function(i)boruta_res$ImpHistory[is.finite(boruta_res$ImpHistory[,i]),i])
+names(lz) <- colnames(boruta_res$ImpHistory)
+Labels <- sort(sapply(lz,median))
+axis(side = 1,las=2,labels = names(Labels),at = 1:ncol(boruta_res$ImpHistory), cex.axis = 0.7)
+```
+
+### The Boruta analysis concluded that the attributes that are important to the target variable (GBM presence) are: IDH1, Age, ATRX, CIC, IDH2, EGFR, PIK3R1, PTEN, NOTCH1, RB1, FUBP1, SMARCA4, TP53, PDGFRA, GRIN2A 
+
+## Step 2.2: Feature selection using caret RFE
+```{r}
+set.seed(123)
+control <- rfeControl(functions=rfFuncs, method="cv", repeats=5, number=10)
+rfe_res <- rfe(train_df[,2:26], train_df[,1], sizes=c(2:26), rfeControl = control)
+print(rfe_res)
+predictors(rfe_res)
+plot(rfe_res, type=c("g","o"))
+```
+### The RFE using random forest functions indicated that the top variables are IDH1, IDH2, Age, CIC, ATRX, PIK3R1, PTEN, RB1, EGFR, GRIN2A, TP53, FUBP1, NOTCH1, SMARCA4, CSMD3, MUC16, Race_black, Race_asian, PIK3CA, Race_native_aa, FAT4, BCOR, NF1
+
+# Step 3: Fit each feature selection into a logistic regression model and measure VIF (for multicollinearity)
+
+## Step 3.1: Evaluating Boruta feature selection
+```{r}
+boruta_train_df <- subset(train_df, select=c(GBM, IDH1, Age, ATRX, CIC, IDH2, EGFR, PIK3R1, PTEN, NOTCH1, RB1, FUBP1, SMARCA4, TP53, PDGFRA, GRIN2A))
+boruta_test_df <- subset(test_df, select=c(GBM, IDH1, Age, ATRX, CIC, IDH2, EGFR, PIK3R1, PTEN, NOTCH1, RB1, FUBP1, SMARCA4, TP53, PDGFRA, GRIN2A))
+```
+
+```{r}
+log_reg_boruta <- glm(GBM~., data=boruta_train_df, family=binomial(link="logit"))
+options(scipen=999)
+summary(log_reg_boruta)
+
+vif(log_reg_boruta)
+```
+
+```{r}
+with(log_reg_boruta, null.deviance-deviance)
+options(scipen=999)
+with(log_reg_boruta, pchisq(null.deviance-deviance, lower.tail=FALSE, df.null-df.residual))
+```
+-- Chi square statistic: 419.25
+-- P-value: 0.000
+
+```{r}
+set.seed(123)
+boruta_pred <- predict(log_reg_boruta, boruta_test_df, type="response")
+boruta_test_df$pred <- ifelse(boruta_pred > 0.5, "1", "0")
+boruta_test_df$pred <- as.factor(boruta_test_df$pred)
+confusionMatrix(boruta_test_df$pred,boruta_test_df$GBM)
+```
+-- Accuracy score: 0.881
+
+## Step 3.2: Evaluating RFE feature selection
+```{r}
+rfe_train_df <- subset(train_df, select=c(GBM, IDH1, IDH2, Age, CIC, ATRX, PIK3R1, PTEN, RB1, EGFR, GRIN2A, TP53, FUBP1, NOTCH1, SMARCA4, CSMD3, MUC16, Race_black, Race_asian, PIK3CA, Race_native_aa, FAT4, BCOR, NF1))
+rfe_test_df <- subset(test_df, select=c(GBM, IDH1, IDH2, Age, CIC, ATRX, PIK3R1, PTEN, RB1, EGFR, GRIN2A, TP53, FUBP1, NOTCH1, SMARCA4, CSMD3, MUC16, Race_black, Race_asian, PIK3CA, Race_native_aa, FAT4, BCOR, NF1))
+head(rfe_train_df)
+```
+
+```{r}
+log_reg_rfe <- glm(GBM~., data=rfe_train_df, family=binomial(link="logit"))
+options(scipen=999)
+summary(log_reg_rfe)
+anova(log_reg_rfe)
+vif(log_reg_rfe)
+```
+
+```{r}
+with(log_reg_rfe, null.deviance-deviance)
+options(scipen=999)
+with(log_reg_rfe, pchisq(null.deviance-deviance, lower.tail=FALSE, df.null-df.residual))
+```
+-- Chi square: 431.64
+-- P-value: 0.000
+
+```{r}
+set.seed(123)
+rfe_pred <- predict(log_reg_rfe, rfe_test_df, type="response")
+rfe_test_df$pred <- ifelse(rfe_pred > 0.5, "1", "0")
+rfe_test_df$pred <- as.factor(rfe_test_df$pred)
+confusionMatrix(rfe_test_df$pred,rfe_test_df$GBM)
+```
+
+## Based on the chi-square statistics and accuracy score above, the RFE feature selection yielded a better model for both explanatory and prediction. The random forest RFE feature selected logistic regression model has a p-value of 0 and chi square statistic of 431.64, indicating that the model is statistically significant in explaining the presence of glioblastoma multiforme compared to lower grade gliomas. The RFE feature selection prediction model also has a higher accuracy score of 0.8968.
+
+## Step 3.3: Testing out other classifier algorithms and compare accuracy scores to logistic regression
+
+## Logistic Regression
+```{r}
+cm_logreg <- confusionMatrix(rfe_test_df$pred,rfe_test_df$GBM)
+cm_logreg_acc <- cm_logreg$overall['Accuracy']
+```
+
+## Random Forest
+```{r}
+set.seed(123)
+mtry_rf <- tuneRF(rfe_train_df[,2:24],train_df[,1],ntreeTry=500, stepFactor = 1.1, improve = 0.000001, trace=FALSE, plot=FALSE)
+bestmtry_rf <- mtry_rf[mtry_rf[, 2] == min(mtry_rf[, 2]), 1]
+rf_train <- randomForest(GBM~., data=rfe_train_df, ntree=500, mtry=bestmtry_rf)
+
+rf_pred <- predict(rf_train, rfe_test_df)
+cm_rf <- confusionMatrix(rf_pred, rfe_test_df$GBM)
+cm_rf_acc <- cm_rf$overall['Accuracy']
+```
+## AdaBoost
+```{r}
+set.seed(123)
+ada_train <- ada(GBM~., rfe_train_df, type="gentle")
+ada_pred <- predict(ada_train, rfe_test_df)
+cm_ada <- confusionMatrix(ada_pred, rfe_test_df$GBM)
+cm_ada_acc <- cm_ada$overall['Accuracy']
+```
+## NaiveBayes
+```{r}
+set.seed(123)
+nb_train <- naive_bayes(GBM~., rfe_train_df)
+nb_pred <- predict(nb_train, rfe_test_df)
+cm_nb <- confusionMatrix(nb_pred, rfe_test_df$GBM)
+cm_nb_acc <- cm_nb$overall['Accuracy']
+```
+## Linear SVM
+```{r}
+set.seed(123)
+ln_svm_train <- svm(GBM~., rfe_train_df, kernel="linear")
+ln_svm_pred <- predict(ln_svm_train, rfe_test_df)
+cm_ln_svm <- confusionMatrix(ln_svm_pred, rfe_test_df$GBM)
+ln_svm_acc <- cm_ln_svm$overall['Accuracy']
+```
+## Non-linear SVM
+```{r}
+set.seed(123)
+nln_svm_train <- svm(GBM~., rfe_train_df, kernel="radial")
+nln_svm_pred <- predict(nln_svm_train, rfe_test_df)
+cm_nln_svm <- confusionMatrix(nln_svm_pred, rfe_test_df$GBM)
+nln_svm_acc <- cm_nln_svm$overall['Accuracy']
+```
+## Comparison table
+```{r}
+compare_acc_table <- data.frame(
+  Algorithm=c("Logistic Regression", "Random Forest", "AdaBoost", "Naive Bayes", "Linear SVM", "Non-linear SVM"),
+  Accuracy=c(cm_logreg_acc, cm_rf_acc, cm_ada_acc, cm_nb_acc, ln_svm_acc, nln_svm_acc)
+)
+compare_acc_table <- compare_acc_table[order(compare_acc_table$Accuracy, decreasing=TRUE),]
+
+compare_acc_table
+```
+-- Logistic Regression is the best classification algorithm with the highest accuracy score of 0.8968
+
+# Step 4: Interpreting the logistic regression coefficients
+-- Variables that are significant are Age, IDH1, IDH2, PIK3R1, EGFR, GRIN2A, TP53, and NF1
+```{r}
+summary(log_reg_rfe)
+anova(log_reg_rfe)
+vif(log_reg_rfe)
+```
+-	IDH1: individuals with IDH1 mutation will have 98.4% chance of having LGG instead of GBM compared to individuals without this genetic mutation.
+-	IDH2: individuals with IDH2 mutation will have 97.3% chance of having LGG instead of GBM compared to individuals without this genetic mutation.
+-	PIK3R1: individuals with PIK3R1 mutation will have 615.9% chance of having GBM instead of LGG compared to individuals without this genetic mutation.
+-	EGFR: individuals with IDH2 mutation will have 52.2% chance of having LGG instead of GBM compared to individuals without this genetic mutation.
+-	GRIN2A: individuals with GRIN2A mutation will have 1627.6% chance of having GBM instead of LGG compared to individuals without this genetic mutation.
+-	TP53: individuals with TP53 mutation will have 232.2% chance of having GBM instead of LGG compared to individuals without this genetic mutation.
+-	NF1: individuals with NF1 mutation will have 68.2% chance of having LGG instead of GBM compared to individuals without this genetic mutation.
+-	Age: for every additional year of age, the chance of getting GBM instead of LGG increases by 103.9%.
+
